@@ -1,0 +1,293 @@
+"""
+Optimized reel generator - creates video reels from profile picture and content
+"""
+import os
+import subprocess
+import logging
+from pathlib import Path
+from typing import Optional
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import ImageClip
+from utils import logger, ensure_directory, cleanup_temp_files, validate_video_file
+from config import Config
+
+class ReelGenerator:
+    """Generates Instagram reels from profile picture and content with optimizations"""
+    
+    # Instagram reel dimensions: 1080x1920 (9:16 aspect ratio)
+    REEL_WIDTH = 1080
+    REEL_HEIGHT = 1920
+    
+    def __init__(self, profile_pic_path: str, output_dir: str = 'output'):
+        self.profile_pic_path = profile_pic_path
+        self.output_dir = ensure_directory(output_dir)
+        self._fonts = self._load_fonts()
+        self._ffmpeg_available = self._check_ffmpeg()
+        
+    def _check_ffmpeg(self) -> bool:
+        """Check if ffmpeg is available"""
+        try:
+            result = subprocess.run(
+                ['ffmpeg', '-version'], 
+                capture_output=True, 
+                timeout=2
+            )
+            return result.returncode == 0
+        except:
+            return False
+    
+    def _load_fonts(self) -> dict:
+        """Load fonts with fallbacks"""
+        fonts = {}
+        font_paths = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "arial.ttf"
+        ]
+        
+        # Try to load large font
+        for path in font_paths:
+            try:
+                fonts['large'] = ImageFont.truetype(path, 60)
+                break
+            except:
+                continue
+        else:
+            fonts['large'] = ImageFont.load_default()
+        
+        # Try to load medium font
+        for path in font_paths:
+            try:
+                fonts['medium'] = ImageFont.truetype(path, 40)
+                break
+            except:
+                continue
+        else:
+            fonts['medium'] = ImageFont.load_default()
+        
+        return fonts
+    
+    def download_image(self, url: str, save_path: str) -> bool:
+        """Download image from URL with streaming"""
+        try:
+            import requests
+            response = requests.get(url, timeout=15, stream=True)
+            response.raise_for_status()
+            
+            save_path_obj = Path(save_path)
+            save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            logger.debug(f"Downloaded image: {save_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error downloading image from {url}: {e}")
+            return False
+    
+    def _create_circular_mask(self, size: int) -> Image.Image:
+        """Create a circular mask for profile picture"""
+        mask = Image.new('L', (size, size), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((0, 0, size, size), fill=255)
+        return mask
+    
+    def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list:
+        """Wrap text to fit within max_width efficiently"""
+        words = text.split()
+        if not words:
+            return []
+        
+        lines = []
+        current_line = []
+        
+        # Create a temporary image for text measurement (reuse)
+        temp_img = Image.new('RGB', (1, 1))
+        temp_draw = ImageDraw.Draw(temp_img)
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = temp_draw.textbbox((0, 0), test_line, font=font)
+            test_width = bbox[2] - bbox[0]
+            
+            if test_width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines
+    
+    def create_reel_frame(
+        self, 
+        profile_pic_path: str, 
+        content_text: str, 
+        content_image_path: Optional[str] = None
+    ) -> Image.Image:
+        """Create a single frame for the reel"""
+        # Create base frame
+        frame = Image.new('RGB', (self.REEL_WIDTH, self.REEL_HEIGHT), color='#000000')
+        draw = ImageDraw.Draw(frame)
+        
+        # Load and add profile picture
+        try:
+            profile = Image.open(profile_pic_path)
+            profile = profile.convert('RGB')
+            profile_size = 400
+            profile = profile.resize((profile_size, profile_size), Image.Resampling.LANCZOS)
+            
+            # Create and apply circular mask
+            mask = self._create_circular_mask(profile_size)
+            
+            # Paste profile pic at top center
+            profile_x = (self.REEL_WIDTH - profile_size) // 2
+            profile_y = 200
+            frame.paste(profile, (profile_x, profile_y), mask)
+            
+            # Clean up
+            profile.close()
+            
+        except Exception as e:
+            logger.warning(f"Error loading profile picture: {e}")
+        
+        # Add content image if available
+        if content_image_path and os.path.exists(content_image_path):
+            try:
+                content_img = Image.open(content_image_path)
+                content_img = content_img.convert('RGB')
+                
+                # Resize to fit in middle section while maintaining aspect ratio
+                max_size = 600
+                content_img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                
+                img_x = (self.REEL_WIDTH - content_img.width) // 2
+                img_y = 700
+                frame.paste(content_img, (img_x, img_y))
+                
+                # Clean up
+                content_img.close()
+                
+            except Exception as e:
+                logger.warning(f"Error loading content image: {e}")
+        
+        # Add text overlay
+        text_y = 1300
+        text_lines = self._wrap_text(content_text, self._fonts['medium'], self.REEL_WIDTH - 100)
+        
+        for i, line in enumerate(text_lines[:3]):  # Max 3 lines
+            bbox = draw.textbbox((0, 0), line, font=self._fonts['medium'])
+            text_width = bbox[2] - bbox[0]
+            text_x = (self.REEL_WIDTH - text_width) // 2
+            draw.text((text_x, text_y + i * 50), line, fill='white', font=self._fonts['medium'])
+        
+        return frame
+    
+    def _generate_video_moviepy(self, frame_path: str, output_path: str, duration: int) -> bool:
+        """Generate video using moviepy"""
+        try:
+            clip = ImageClip(frame_path, duration=duration)
+            clip.write_videofile(
+                output_path,
+                fps=Config.REEL_FPS,
+                codec='libx264',
+                audio=False,
+                preset='medium',
+                logger=None,
+                verbose=False
+            )
+            clip.close()
+            return True
+        except Exception as e:
+            logger.warning(f"MoviePy video generation failed: {e}")
+            return False
+    
+    def _generate_video_ffmpeg(self, frame_path: str, output_path: str, duration: int) -> bool:
+        """Generate video using ffmpeg directly (more efficient)"""
+        if not self._ffmpeg_available:
+            return False
+        
+        try:
+            cmd = [
+                'ffmpeg', '-y',  # Overwrite output file
+                '-loop', '1',  # Loop the image
+                '-i', frame_path,  # Input image
+                '-t', str(duration),  # Duration
+                '-vf', f'scale={self.REEL_WIDTH}:{self.REEL_HEIGHT}:force_original_aspect_ratio=decrease,pad={self.REEL_WIDTH}:{self.REEL_HEIGHT}:(ow-iw)/2:(oh-ih)/2',
+                '-pix_fmt', 'yuv420p',  # Pixel format for compatibility
+                '-r', str(Config.REEL_FPS),  # Frame rate
+                '-preset', 'medium',  # Encoding preset
+                output_path
+            ]
+            
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=60
+            )
+            
+            if result.returncode == 0:
+                return True
+            else:
+                logger.error(f"ffmpeg error: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg command timed out")
+            return False
+        except Exception as e:
+            logger.error(f"ffmpeg execution error: {e}")
+            return False
+    
+    def generate_reel(self, content_data: dict, duration: int = 15) -> str:
+        """Generate a video reel with optimized methods"""
+        # Download content image if available
+        content_image_path = None
+        if content_data.get('image_url'):
+            content_image_path = self.output_dir / 'content_image.jpg'
+            if not self.download_image(content_data['image_url'], str(content_image_path)):
+                content_image_path = None
+        
+        # Create frame
+        frame = self.create_reel_frame(
+            self.profile_pic_path,
+            content_data.get('text', 'Space Update'),
+            str(content_image_path) if content_image_path else None
+        )
+        
+        # Save frame
+        frame_path = self.output_dir / 'reel_frame.jpg'
+        frame.save(frame_path, quality=95, optimize=True)
+        frame.close()  # Free memory
+        
+        # Create video from frame
+        output_path = self.output_dir / 'reel.mp4'
+        
+        # Try ffmpeg first (faster and more efficient)
+        if self._ffmpeg_available:
+            logger.info("Generating video using ffmpeg...")
+            if self._generate_video_ffmpeg(str(frame_path), str(output_path), duration):
+                logger.info(f"Video created successfully: {output_path}")
+                # Cleanup temp files
+                cleanup_temp_files(str(self.output_dir), "*.jpg", keep_recent=2)
+                return str(output_path)
+        
+        # Fallback to moviepy
+        logger.info("Generating video using moviepy...")
+        if self._generate_video_moviepy(str(frame_path), str(output_path), duration):
+            logger.info(f"Video created successfully: {output_path}")
+            cleanup_temp_files(str(self.output_dir), "*.jpg", keep_recent=2)
+            return str(output_path)
+        
+        # If both fail, raise exception
+        raise Exception("Could not create video file with any available method")
+    
+    def cleanup(self):
+        """Cleanup temporary files"""
+        cleanup_temp_files(str(self.output_dir), "*.jpg", keep_recent=2)
