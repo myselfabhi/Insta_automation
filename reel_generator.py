@@ -18,11 +18,21 @@ class ReelGenerator:
     REEL_WIDTH = 1080
     REEL_HEIGHT = 1920
     
-    def __init__(self, profile_pic_path: str, output_dir: str = 'output'):
+    def __init__(self, profile_pic_path: str, output_dir: str = 'output', use_logo: bool = False, logo_path: Optional[str] = None):
         self.profile_pic_path = profile_pic_path
+        self.use_logo = use_logo
+        self.logo_path = logo_path or Config.LOGO_PATH
         self.output_dir = ensure_directory(output_dir)
         self._fonts = self._load_fonts()
         self._ffmpeg_available = self._check_ffmpeg()
+        
+        # Determine which image to use
+        if self.use_logo and os.path.exists(self.logo_path):
+            self.image_path = self.logo_path
+            logger.info(f"Using logo: {self.logo_path}")
+        else:
+            self.image_path = self.profile_pic_path
+            logger.info(f"Using profile picture: {self.profile_pic_path}")
         
     def _check_ffmpeg(self) -> bool:
         """Check if ffmpeg is available"""
@@ -124,6 +134,24 @@ class ReelGenerator:
         
         return lines
     
+    def _extract_background_from_logo(self, logo_path: str) -> Image.Image:
+        """Extract and resize the cosmic background from the logo"""
+        try:
+            logo = Image.open(logo_path)
+            logo = logo.convert('RGB')  # Convert to RGB to remove alpha if present
+            
+            # Resize logo background to fit reel dimensions (1080x1920)
+            # Use high-quality resampling to maintain the cosmic effect
+            background = logo.resize((self.REEL_WIDTH, self.REEL_HEIGHT), Image.Resampling.LANCZOS)
+            logo.close()
+            
+            logger.debug(f"Extracted background from logo: {logo_path}")
+            return background
+        except Exception as e:
+            logger.warning(f"Error extracting background from logo: {e}. Using default background.")
+            # Fallback to dark space background
+            return Image.new('RGB', (self.REEL_WIDTH, self.REEL_HEIGHT), color='#0a0a1a')
+    
     def create_reel_frame(
         self, 
         profile_pic_path: str, 
@@ -131,30 +159,64 @@ class ReelGenerator:
         content_image_path: Optional[str] = None
     ) -> Image.Image:
         """Create a single frame for the reel"""
-        # Create base frame
-        frame = Image.new('RGB', (self.REEL_WIDTH, self.REEL_HEIGHT), color='#000000')
+        # Use logo background if logo is enabled, otherwise use black background
+        if self.use_logo and os.path.exists(self.logo_path):
+            frame = self._extract_background_from_logo(self.logo_path)
+        else:
+            # Create base frame with dark background
+            frame = Image.new('RGB', (self.REEL_WIDTH, self.REEL_HEIGHT), color='#000000')
+        
         draw = ImageDraw.Draw(frame)
         
-        # Load and add profile picture
-        try:
-            profile = Image.open(profile_pic_path)
-            profile = profile.convert('RGB')
-            profile_size = 400
-            profile = profile.resize((profile_size, profile_size), Image.Resampling.LANCZOS)
-            
-            # Create and apply circular mask
-            mask = self._create_circular_mask(profile_size)
-            
-            # Paste profile pic at top center
-            profile_x = (self.REEL_WIDTH - profile_size) // 2
-            profile_y = 200
-            frame.paste(profile, (profile_x, profile_y), mask)
-            
-            # Clean up
-            profile.close()
-            
-        except Exception as e:
-            logger.warning(f"Error loading profile picture: {e}")
+        # Load and add profile picture or logo
+        # When using logo background, we can optionally show a smaller logo watermark
+        # or skip it since the background already has the cosmic theme
+        if not self.use_logo:
+            # Only show profile picture if not using logo background
+            try:
+                image = Image.open(profile_pic_path)
+                image = image.convert('RGBA' if image.mode == 'RGBA' else 'RGB')
+                image_size = 400
+                
+                # Resize image
+                image = image.resize((image_size, image_size), Image.Resampling.LANCZOS)
+                
+                # Create and apply circular mask for profile pic
+                mask = self._create_circular_mask(image_size)
+                
+                # Paste image at top center
+                image_x = (self.REEL_WIDTH - image.width) // 2
+                image_y = 200
+                frame.paste(image, (image_x, image_y), mask)
+                
+                # Clean up
+                image.close()
+                
+            except Exception as e:
+                logger.warning(f"Error loading profile picture: {e}")
+        else:
+            # When using logo background, optionally add a small logo watermark at top
+            # This is optional - comment out if you don't want the logo character on top
+            try:
+                logo_img = Image.open(self.logo_path)
+                logo_img = logo_img.convert('RGBA' if logo_img.mode == 'RGBA' else 'RGB')
+                
+                # Make logo smaller as a watermark (optional)
+                watermark_size = 150
+                logo_img.thumbnail((watermark_size, watermark_size), Image.Resampling.LANCZOS)
+                
+                # Position at top right corner as watermark
+                logo_x = self.REEL_WIDTH - logo_img.width - 30
+                logo_y = 30
+                
+                if logo_img.mode == 'RGBA':
+                    frame.paste(logo_img, (logo_x, logo_y), logo_img)
+                else:
+                    frame.paste(logo_img, (logo_x, logo_y))
+                
+                logo_img.close()
+            except Exception as e:
+                logger.debug(f"Optional logo watermark not added: {e}")
         
         # Add content image if available
         if content_image_path and os.path.exists(content_image_path):
@@ -254,9 +316,10 @@ class ReelGenerator:
             if not self.download_image(content_data['image_url'], str(content_image_path)):
                 content_image_path = None
         
-        # Create frame
+        # Create frame (use logo or profile pic based on config)
+        image_path = self.image_path if hasattr(self, 'image_path') else self.profile_pic_path
         frame = self.create_reel_frame(
-            self.profile_pic_path,
+            image_path,
             content_data.get('text', 'Space Update'),
             str(content_image_path) if content_image_path else None
         )

@@ -25,6 +25,10 @@ class Config:
     REEL_FPS = 30
     PROFILE_PIC_PATH = os.getenv('PROFILE_PIC_PATH', 'profile_pic.jpg')
     
+    # Logo settings
+    LOGO_PATH = os.getenv('LOGO_PATH', 'assets/vu.png')
+    USE_LOGO = os.getenv('USE_LOGO', 'true').lower() == 'true'  # Use logo instead of profile pic
+    
     # Hashtags
     BASE_HASHTAGS = [
         '#space', '#astronomy', '#nasa', '#spacex', '#universe', 

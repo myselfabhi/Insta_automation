@@ -38,10 +38,12 @@ class ReelScheduler:
             # Ensure profile picture exists
             self._ensure_profile_picture()
             
-            # Initialize reel generator
+            # Initialize reel generator (use logo if configured)
             self.reel_gen = ReelGenerator(
                 str(self.profile_pic_path), 
-                output_dir='output'
+                output_dir='output',
+                use_logo=Config.USE_LOGO,
+                logo_path=Config.LOGO_PATH if Config.USE_LOGO else None
             )
             
             logger.info("All components initialized successfully")
@@ -52,7 +54,15 @@ class ReelScheduler:
             return False
     
     def _ensure_profile_picture(self):
-        """Ensure profile picture exists"""
+        """Ensure profile picture or logo exists"""
+        # If using logo, check if logo exists
+        if Config.USE_LOGO:
+            logo_path = Path(Config.LOGO_PATH)
+            if not logo_path.exists():
+                logger.warning(f"Logo not found at {Config.LOGO_PATH}. Please ensure logo file exists.")
+            return
+        
+        # Otherwise, ensure profile picture exists
         if not self.profile_pic_path.exists():
             logger.info("Profile picture not found. Downloading from Instagram...")
             
