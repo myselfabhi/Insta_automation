@@ -8,7 +8,7 @@ This guide explains each file in your project as if you're learning Python for t
 - How files work together
 - Real-world examples
 
----\\\
+---
 
 ## 📁 File 1: `config.py` - The Settings File
 
