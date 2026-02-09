@@ -24,7 +24,7 @@ Think of this as a **settings/configuration file**. It stores all the important 
 #### 1. **Import Statements** (Lines 4-5)
 ```python
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv 
 ```
 **What this means:**
 - `import os` - Brings in Python's built-in "os" module (operating system functions)
